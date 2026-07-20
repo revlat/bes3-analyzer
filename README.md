@@ -204,6 +204,19 @@ Beobachteter Inhalt:
 **Teile-/Materialnummern** erscheinen als ASCII im Bosch-Format
 `DEB… * nnnnn-nnnn-nn-…`.
 
+## Markenhinweis
+
+Dies ist ein inoffizielles, unabhängiges Hobbyprojekt ohne Verbindung zu oder
+Unterstützung durch Bosch. Genannte Marken- und Modellbezeichnungen (z. B.
+Bosch-Bauteil-Typcodes) sind Eigentum der jeweiligen Rechteinhaber und werden
+hier nur beschreibend zur Kompatibilitäts-/Interoperabilitätsangabe verwendet.
+
+## Haftungsausschluss
+
+Dieses Projekt dient ausschließlich der Read-only-Analyse/Diagnose des
+CAN-Busses. Es wird ohne jegliche Gewähr für Richtigkeit oder Vollständigkeit
+bereitgestellt; die Nutzung erfolgt auf eigenes Risiko.
+
 ## Lizenz
 
 MIT — siehe [LICENSE](LICENSE).
