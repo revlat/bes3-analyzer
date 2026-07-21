@@ -6,6 +6,8 @@ bestätigten Signale.
 
 Read-only-Interoperabilität/Diagnose. Kein Fälschen oder Manipulieren von Nachrichten.
 
+Zum Aufzeichnen eigener CAN-FD-Mitschnitte siehe [`bes3-logger/`](bes3-logger/README.md).
+
 ## Bus
 
 - **CAN-FD**, nominale Bitrate **500 kBaud**, Daten-Bitrate **2000 kBaud**.
