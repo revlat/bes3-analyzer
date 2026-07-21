@@ -6,7 +6,12 @@ bestätigten Signale.
 
 Read-only-Interoperabilität/Diagnose. Kein Fälschen oder Manipulieren von Nachrichten.
 
-Zum Aufzeichnen eigener CAN-FD-Mitschnitte siehe [`bes3-logger/`](bes3-logger/README.md).
+Zum Aufzeichnen eigener CAN-FD-Mitschnitte siehe [`bes3-logger/`](bes3-logger/README.md),
+zur Dekodier-Bibliothek (für Dateien und einzelne Live-Nachrichten) siehe
+[`bes3-decoder/`](bes3-decoder/README.md), zum Visualisieren aufgezeichneter
+Logs siehe [`bes3-log-plotter/`](bes3-log-plotter/README.md).
+
+<a href="bes3-log-plotter/example-plots/testfahrt_lang.png"><img src="bes3-log-plotter/example-plots/testfahrt_lang.png" width="220" alt="Beispiel-Plot des bes3-log-plotter"></a>
 
 ## Bus
 
@@ -122,6 +127,42 @@ Entry-ID auflösen.
 | Akku-FET-Temperatur | `502` | `001480D2` | `varint / 10` | °C |
 | Antriebseinheit-PCB-Temperatur | `401` | `00149884` | `varint / 10` | °C |
 | Akku-Spannung (live) | `502` | `0018808C` | `varint / 1000` | V |
+| Geschwindigkeit (roh, unangezeigt) | `401` | `001C9808` | `varint / 100` | km/h — ungerundeter Rohwert, s. `DISPLAYED_BIKE_SPEED` |
+| Fahrer-Drehmoment | `401` | `00149814` | `varint / 10` | Nm |
+| Verbleibende Energie (gesamt) | `502` | `00148092` | `varint / 10` | Wh — ohne Fahrer-Normierung, s. „Verbleibende Energie (Fahrer)" |
+| Motorunterstützung aktiv | `401` | `00109883` | `varint` (Bool) | — |
+| Akku-Pack-Dauerleistung | `502` | `001480D5` | `varint` (keine Skalierung) | W |
+| Straßenneigung (roh) | `408` | `0010981D` | `varint` (keine Skalierung) | vermutlich % — Einheit/Vorzeichen bei Gefälle nicht verifiziert |
+| Abgegebene Energie (Lifetime) | `502` | `0014809C` | `varint` (keine Skalierung) | Wh — monotoner Lifetime-Zähler |
+| Reichweite je Fahrmodus | `419` | `····9857` (oberes Wort variabel, s. u.) | gepacktes Protobuf-Array, 4 Werte | km, absteigend sortiert (Modus 1–4: ECO/TOUR+/eMTB/TURBO) |
+| Aktivitätsdauer ohne Stopp | `3C8` | `····A243` (oberes Wort variabel) | `varint` (keine Skalierung) | s — seit Beginn der aktuellen Aktivität, ohne Stopp |
+| Durchschnittsgeschwindigkeit (Aktivität) | `3C8` | `0014A246` | `varint / 100` | km/h |
+| Durchschnittsleistung Fahrer (Aktivität) | `3C8` | `····A24A` (oberes Wort variabel) | `varint` (keine Skalierung) | W |
+| Fahreranteil an Antriebsleistung | `3C8` | `0010A254` | `varint` (keine Skalierung) | % |
+| Umgebungshelligkeit | `3C8` | `····A141` (oberes Wort variabel) | `varint / 1000` | Lux |
+| Höhe (Smartphone) | `3C8` | `0014C085` | `varint` (keine Skalierung, signed) | m — **kein Bike-Sensor**, s. u. |
+
+**Sonderfall Höhe (`0014C085`):** Liegt in derselben CAN-ID-Domäne (`3C8`) wie
+mehrere andere Werte, die klar vom gekoppelten **Smartphone** stammen
+(Durchschnittsgeschwindigkeit/-trittfrequenz/-herzfrequenz einer Aktivität) —
+vermutlich also eine Handy-Höhenschätzung, kein Sensor der Antriebseinheit.
+Die Dekodierung selbst ist sauber (`0x08`-Marker, signed Int16, keine
+Skalierung), aber die beobachteten Werte einer Aufnahme (ca. 356–424 m)
+wurden beim Abgleich mit der tatsächlichen Fahrtstrecke als **nicht
+plausibel** eingeschätzt — ob das an einer falschen
+Vorzeichen-/Skalen-Annahme liegt oder das Feld grundsätzlich nicht die reale
+Höhe widerspiegelt (z. B. Standort-/Wetterdienst-Schätzung statt echtem
+Barometer), ist ungeklärt. Mit Vorsicht behandeln.
+
+**Sonderfall `REACHABLE_RANGE` (`····9857`):** Das ist kein einzelner Varint,
+sondern ein **gepacktes Protobuf-Repeated-Feld**: `0x0a <Länge> <gepackte
+Varints>` mit genau 4 Werten. Ungewöhnlich: das **obere** Tag-Wort ist hier
+nicht konstant — es wechselt live zwischen `0020`/`0024`/`0028`, je nachdem
+wie viele Byte die 4 gepackten Varints gerade brauchen (jeder Wert ≥ 128
+kostet ein Byte mehr, +4 im Tag pro zusätzlichem Byte). Die Werte fallen im
+Gleichschritt mit dem Ladezustand über eine Fahrt und sind absteigend
+sortiert — passt zu „Reichweite in den 4 nicht-OFF-Fahrmodi", höchste
+Reichweite (ECO) zuerst.
 
 Beispiele für Feld-Layouts (Bytes nach dem 4-Byte-Tag):
 ```
@@ -129,9 +170,12 @@ Beispiele für Feld-Layouts (Bytes nach dem 4-Byte-Tag):
 00108088 (SoC)   : 08 <varint percent>
 ```
 
-**Nicht auf diesem Bus beobachtet:** GPS/Standort, Höhe (erschöpfend im
-relevanten Adressraum gesucht — hier nicht exponiert), ein direktes
-Licht-An/Aus-Statusbit, Tour-/Tageskilometerzähler, Betriebsstundenzähler.
+**Nicht auf diesem Bus beobachtet:** GPS/Standort, Höhe **als Sensor der
+Antriebseinheit/des Bikes** (erschöpfend im relevanten Adressraum gesucht —
+hier nicht exponiert; die einzige gefundene „Höhe" ist ein vom Smartphone
+zurückgespiegelter Wert, s. „Höhe (Smartphone)" oben — dessen Plausibilität
+selbst fraglich ist), ein direktes Licht-An/Aus-Statusbit,
+Tour-/Tageskilometerzähler, Betriebsstundenzähler.
 
 ## Fahrmodi
 
