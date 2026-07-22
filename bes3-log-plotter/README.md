@@ -1,12 +1,18 @@
 # bes3-log-plotter
 
 Plottet **alle aktuell bekannten** BES3-Signale (Geschwindigkeit, SoC,
-Drehmoment, Temperaturen, Fahrmodus, …) aus einer mit [`bes3-logger`](../bes3-logger/)
+Drehmoment, Temperaturen, Fahrmodus, …) aus einer mit [`bes3-canfd-logger`](../bes3-canfd-logger/)
 aufgezeichneten CSV als ein gemeinsames Bild mit einem Subplot pro Signal —
 plus ein Text-Panel mit den in der Aufnahme gefundenen **Klartext-ASCII-
 Strings** (erkannte Bauteil-Typcodes, die tatsächlich am Bike konfigurierte
 Fahrmodus-Liste, sowie weitere wiederkehrende Strings wie Seriennummern und
 Parameter-Codes).
+
+Akzeptiert seit Kurzem neben CAN-FD-CSV-Logs auch **BLE-Hex-Logs** (siehe
+[BLE-Unterstützung in `bes3-decoder`](../bes3-decoder/README.md#ble-unterstützung))
+— das Format wird automatisch anhand der Datei erkannt. Bei BLE-Logs entfällt
+das ASCII-String-/Bauteil-Code-Text-Panel (CSV-spezifisch) und die x-Achse
+zeigt Log-Zeilen statt Minuten, falls das Log keine Timestamp-Spalte enthält.
 
 Stand: 2026-07-21 — der Stand der **bekannten** Signale, siehe „Aktualität"
 unten. Zum Frame-Aufbau, zur Varint-Dekodierung und zur vollständigen,
@@ -101,10 +107,21 @@ Wo `matplotlib` bereits systemweit verfügbar ist, geht auch einfach
 
 ```bash
 python3 bes3-log-plotter.py <log_completely_full.csv> [-o ausgabe.png] [--dpi 130]
+python3 bes3-log-plotter.py <ble-log_hex.txt> [-o ausgabe.png] [--dpi 130]
 ```
 
-- `csv_path` (Pflicht): das Log, z. B. eine mit `bes3-logger` aufgezeichnete
-  `*_completely_full.csv`.
+- `log_path` (Pflicht): das Log — entweder eine mit `bes3-canfd-logger` aufgezeichnete
+  CAN-FD-`*_completely_full.csv`, oder ein BLE-Hex-Log (ein Frame-Puffer pro
+  Zeile, siehe [BLE-Unterstützung in `bes3-decoder`](../bes3-decoder/README.md#ble-unterstützung)).
+  Format wird automatisch erkannt (`decode_bes3.is_ble_log`): CAN-CSV hat als
+  erstes Kopfzeilen-Feld immer wörtlich `Timestamp` (siehe `bes3-canfd-logger`);
+  alles andere gilt als BLE-Hex-Log — diese CAN/BLE-Unterscheidung selbst
+  funktioniert auch, wenn eine BLE-Log-Zeile eine komma-getrennte
+  Timestamp-Spalte enthält. Das eigentliche Zeilen-Parsing in `decode_bes3.py`
+  unterstützt eine solche Komma-Trennung aber (noch) nicht — dort muss der
+  Timestamp durch `-`/Leerzeichen vom Frame getrennt sein, siehe die
+  Einschränkung in der
+  [`bes3-decoder`-README](../bes3-decoder/README.md#ble-unterstützung).
 - `-o` / `--output` (optional): Pfad der Ausgabe-PNG. Standard: derselbe Name
   wie die Eingabedatei mit Endung `_signals.png` statt `.csv`.
 - `--dpi` (optional, Standard `130`): Auflösung der PNG.
@@ -117,7 +134,7 @@ Beispiel:
 
 Auch ohne eigene Aufnahme direkt nutzbar für die Entwicklung/zum Ausprobieren:
 das Skript funktioniert mit jeder CSV im Format `Timestamp,ID,DLC,Data`, wie
-sie `bes3-logger` schreibt (auch die reduzierten `_reduced_*`-Varianten
+sie `bes3-canfd-logger` schreibt (auch die reduzierten `_reduced_*`-Varianten
 älterer Logger-Versionen, sofern noch vorhanden — enthalten aber ggf. Lücken).
 
 ## Ausgabe

@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""Eigenständiger Dekoder für die verifizierten BES3-Signale.
+"""Dekoder für die verifizierten BES3-Signale -- sowohl über CAN-FD als auch
+über BLE (Bosch Smart System, zwei Transportwege desselben Systems).
 
-Aufbau der Frames:  [8B MAC][3B Freshness][1B][ Tag-Value-Payload ]
+CAN-FD-Frames:      [8B MAC][3B Freshness][1B][ Tag-Value-Payload ]
 Payload-Eintrag:    [4B Entry-ID][Feld]
 
 WICHTIG: Die meisten Felder sind KEINE festen Little-Endian-Integer, sondern
@@ -10,11 +11,19 @@ Wire-Type 0 (Varint)", gefolgt von einem Varint (7 Nutzbits/Byte, MSB =
 Fortsetzungsbit). Siehe die Haupt-README (../README.md) fuer Details und
 Herleitung jeder Skala.
 
-CLI-Nutzung (Textzusammenfassung einer aufgezeichneten Datei):
-    python3 decode_bes3.py testfahrt3_completely_full.csv
+BLE nutzt dasselbe Varint-Wire-Format und dieselben Signal-IDs wie CAN-FD --
+nur der Rahmen ist anders (siehe „BLE-Unterstuetzung" weiter unten in dieser
+Datei). Deshalb eine einzige SIGNALS-Tabelle fuer beide Transportwege statt
+zweier getrennter Module.
 
-Als Bibliothek: decode_file(path) fuer ganze Aufnahmen, decode_frame(data)
-fuer eine einzelne (auch live empfangene) CAN-FD-Nachricht. Siehe README.md
+CLI-Nutzung (Textzusammenfassung einer aufgezeichneten Datei, Format wird
+automatisch erkannt):
+    python3 decode_bes3.py testfahrt3_completely_full.csv   # CAN-FD-CSV
+    python3 decode_bes3.py ble-log_hex.txt                  # BLE-Hex-Log
+
+Als Bibliothek: decode_file(path)/decode_frame(data) fuer CAN-FD,
+decode_ble_file(path)/decode_ble_frame(data) fuer BLE -- jeweils fuer ganze
+Aufnahmen bzw. eine einzelne (auch live empfangene) Nachricht. Siehe README.md
 in diesem Ordner fuer beide Nutzungsarten mit Beispielen.
 """
 import csv
@@ -375,46 +384,284 @@ def decode_file(path):
     return out
 
 
+def _print_can_summary(path):
+    res = decode_file(path)
+    modes = extract_mode_list(path)  # {index: name} aus dieser Aufnahme
+    print(f"\n=== {path} (CAN-FD) ===")
+    print(f"  Fahrmodus-Liste: {', '.join(f'{i}={n}' for i, n in modes.items())}")
+    for name, series in res.items():
+        if not series:
+            print(f"  {name:22}: (keine Daten)")
+            continue
+        vals = [v for _, v in series]
+        if name == "fahrmodus":
+            # Index ueber die Liste dieser Aufnahme in Namen aufloesen
+            seq = []
+            for v in vals:
+                lbl = f"{v}({modes.get(v, '?')})"
+                if not seq or seq[-1] != lbl:
+                    seq.append(lbl)
+            print(f"  {name:22}: n={len(series):6}  Verlauf: {' -> '.join(seq)}")
+        elif name == "reichweite_km_je_modus":
+            # vals sind 4er-Listen (ein Wert je Fahrmodus), kein einzelner Skalar
+            print(f"  {name:22}: n={len(series):6}  erst={vals[0]}  letzt={vals[-1]}")
+        else:
+            print(f"  {name:22}: n={len(series):6}  "
+                  f"min={min(vals):8.2f}  max={max(vals):8.2f}  "
+                  f"erst={vals[0]:8.2f}  letzt={vals[-1]:8.2f}")
+
+    strings = extract_ascii_strings(path)
+    print("  Bauteil-Typcodes:")
+    for code, label in KNOWN_COMPONENT_CODES.items():
+        if code in strings:
+            print(f"    {code}  {label}")
+    rest = {s: v for s, v in strings.items() if s not in KNOWN_COMPONENT_CODES}
+    if rest:
+        print("  Weitere wiederkehrende Text-Strings (>=3x, mit CAN-ID(s)):")
+        for s, v in sorted(rest.items(), key=lambda kv: -kv[1]["count"]):
+            print(f"    {v['count']:5}x  {s:30}  [{describe_can_ids(v['can_ids'])}]")
+
+
+# ============================================================================
+# BLE-Unterstuetzung
+#
+# CAN-FD und BLE sind zwei Transportwege desselben Bosch-Smart-Systems mit
+# demselben Protobuf-Varint-Wire-Format und denselben Signal-IDs. Verifiziert:
+# die 2-Byte-ID im BLE-Frame ist identisch mit den unteren 16 Bit der 4-Byte-
+# Entry-ID oben (z. B. BLE-ID `98 2D` <-> CAN-Entry-ID `001C982D`,
+# Geschwindigkeit). Deshalb hier keine eigene Signal-Tabelle -- SIGNALS und
+# die Per-Signal-Funktionen oben werden unveraendert wiederverwendet, nur der
+# Rahmen wird anders geparst.
+#
+# BLE-Frame-Format (ein Frame traegt genau ein Signal):
+#
+#     30 <len> <id_hi> <id_lo> [ 08 <varint...> ]
+#
+#     - 0x30: Startbyte.
+#     - len: Anzahl Bytes NACH dem Laengenbyte (Framegroesse gesamt = 2 + len).
+#     - id_hi/id_lo: 2-Byte-Signal-ID (big-endian) = untere 16 Bit der
+#       CAN-Entry-ID.
+#     - Feld: Protobuf-Wire-Format wie bei CAN (0x08 = Tag "Feld 1, Varint"),
+#       kann fehlen (len == 2) -- das bedeutet Wert 0, siehe decode_ble_frame().
+#
+# Eine einzelne BLE-Notification kann mehrere `30...`-Frames hintereinander
+# enthalten (bis zur MTU-Grenze); decode_ble_frame() verarbeitet einen Puffer
+# mit einem oder mehreren Frames.
+#
+# WICHTIG -- kein BLE-Client: dieser Abschnitt baut KEINE BLE-Verbindung auf,
+# kennt keine UUID und enthaelt keine `bleak`-Logik. "Live" heisst hier
+# ausschliesslich, dass decode_ble_frame(bytes) pro eintreffender Notification
+# aufgerufen wird -- woher die Bytes kommen (Log, Sniffer, ein anderes
+# Programm), ist irrelevant.
+# ============================================================================
+
+# Signale, die zwar in SIGNALS stehen, aber auf BLE nicht ueber dieses
+# Kurzframe-Format aufloesbar sind -- werden aus dem LOW16-Lookup ausgelassen.
+#
+# antriebsstrom_a (000061A8, _current): einziges Signal OHNE 0x08-Marker (rohe
+# 64-Bit-BE-Bytes), gehoert zu einem CAN-spezifischen Schema und taucht auf BLE
+# praktisch nicht in diesem Format auf. Ausgelassen, damit ein 985x-Varint nie
+# faelschlich als 64-Bit-Rohwert interpretiert wird.
+_CAN_ONLY = {"antriebsstrom_a"}
+
+
+def _build_low16():
+    """Baut aus SIGNALS den Lookup 'letzte 4 Hex-Zeichen der Entry-ID' ->
+    (signalname, fn). Bei einer Kollision (zwei verschiedene Entry-IDs mit
+    denselben unteren 16 Bit) wird eine Warnung ausgegeben und die betroffene
+    ID aus dem Lookup ausgelassen (mehrdeutig -> keine sichere BLE-Aufloesung
+    moeglich). Im aktuellen SIGNALS-Stand gibt es keine Kollision -- der Guard
+    ist reine Zukunftssicherung.
+    """
+    by_key = {}
+    for name, (tag, fn) in SIGNALS.items():
+        if name in _CAN_ONLY:
+            continue
+        key = tag[-4:].upper()
+        by_key.setdefault(key, []).append((name, fn))
+
+    lookup = {}
+    for key, entries in by_key.items():
+        if len(entries) > 1:
+            names = ", ".join(name for name, _ in entries)
+            print(
+                f"WARNUNG: BLE-ID {key} ist mehrdeutig zwischen mehreren Signalen "
+                f"({names}) -- wird aus dem BLE-Lookup ausgelassen.",
+                file=sys.stderr,
+            )
+            continue
+        lookup[key] = entries[0]
+    return lookup
+
+
+# "982D" -> (signalname, fn)
+LOW16 = _build_low16()
+
+
+def decode_ble_frame(data):
+    """Dekodiert einen rohen BLE-Notification-Puffer (bytes), der einen ODER
+    MEHRERE aneinandergereihte `30...`-Frames enthalten kann, und gibt
+    {signalname: wert} fuer alle im Puffer gefundenen Signale zurueck (leeres
+    Dict, wenn keins passt). Zustandslos -- wie decode_frame direkt fuer
+    Live-Dekodierung pro eintreffender Notification verwendbar.
+
+    Unbekannte IDs werden uebersprungen, nicht als Fehler behandelt. Ein Frame
+    ohne Datenfeld (len == 2) wird wie `08 00` behandelt (= Wert 0), damit die
+    vorhandene Dekodierfunktion semantisch korrekt Null liefert. Taucht dasselbe
+    Signal mehrfach im selben Puffer auf, gewinnt der letzte Wert (wie bei
+    decode_frame).
+    """
+    out = {}
+    i = 0
+    n = len(data)
+    while i < n:
+        if data[i] != 0x30:
+            i += 1
+            continue
+        if i + 1 >= n:
+            break
+        length = data[i + 1]
+        frame = data[i + 2 : i + 2 + length]
+        i += 2 + length
+        if len(frame) < 2:
+            continue
+
+        id16 = frame[0:2].hex().upper()
+        field = frame[2:]
+        if not field:
+            field = b"\x08\x00"
+
+        entry = LOW16.get(id16)
+        if entry is None:
+            continue
+        name, fn = entry
+        val = fn(field)
+        if val is not None:
+            out[name] = val
+    return out
+
+
+_HEX_BYTE = re.compile(r"^[0-9A-Fa-f]{2}$")
+
+
+def _parse_ble_line(line):
+    """Zerlegt eine Log-Zeile in (timestamp_oder_none, frame_bytes_oder_none).
+
+    Toleriert `-` und Leerzeichen (inkl. Tab) als Trennzeichen sowie eine
+    optionale fuehrende Timestamp-Spalte: gesucht wird das erste
+    zusammenhaengende Hex-Token '30', alles davor gilt als optionaler
+    Zeitstempel. Zeilen ohne ein solches Token oder mit Nicht-Hex-Muell im
+    Frame-Teil ergeben (None, None).
+
+    EINSCHRAENKUNG: Der Timestamp muss durch `-` oder Whitespace vom Frame
+    getrennt sein (z. B. "12.345 30-04-98-2D-08-56" oder
+    "14:23:07.128\t30-04-98-2D-08-56" -- beide funktionieren). Ist die
+    Timestamp-Spalte stattdessen per KOMMA abgetrennt (CSV-Stil, z. B.
+    "14:23:07.128,30-04-98-2D-08-56"), verschmilzt das Komma mit der "30" zu
+    einem Token und die Zeile wird NICHT erkannt (ergibt (None, None), kein
+    Crash, aber auch kein Ergebnis). Kommt das in echten Logs vor, muss diese
+    Funktion um Komma als zusaetzliches Trennzeichen vor Frame-Beginn
+    erweitert werden.
+    """
+    tokens = [t for t in re.split(r"[-\s]+", line.strip()) if t]
+    start = None
+    for idx, tok in enumerate(tokens):
+        if _HEX_BYTE.match(tok) and tok.upper() == "30":
+            start = idx
+            break
+    if start is None:
+        return None, None
+
+    frame_tokens = tokens[start:]
+    if not all(_HEX_BYTE.match(tok) for tok in frame_tokens):
+        return None, None
+
+    ts_raw = " ".join(tokens[:start])
+    try:
+        ts = float(ts_raw)
+    except ValueError:
+        ts = ts_raw if ts_raw else None
+
+    data = bytes.fromhex("".join(frame_tokens))
+    return ts, data
+
+
+def decode_ble_file(path):
+    """Liest ein BLE-Hex-Log (ein Frame-Puffer pro Zeile, siehe
+    _parse_ble_line) und sammelt Zeitreihen ueber decode_ble_frame():
+    {signalname: [(ts_oder_zeilenindex, wert), ...]}. Rueckgabestruktur
+    identisch zu decode_file. Leerzeilen und Nicht-Hex-Muell werden
+    uebersprungen, keine Zeile bringt das Parsen zum Absturz.
+    """
+    out = {name: [] for name, _ in LOW16.values()}
+    with open(path) as f:
+        for line_no, line in enumerate(f):
+            if not line.strip():
+                continue
+            ts, data = _parse_ble_line(line)
+            if data is None:
+                continue
+            if ts is None:
+                ts = line_no
+            for name, val in decode_ble_frame(data).items():
+                out[name].append((ts, val))
+    return out
+
+
+def is_ble_log(path):
+    """Format-Erkennung: CAN-CSV-Logs von bes3-canfd-logger haben immer eine
+    Kopfzeile, deren erstes Feld woertlich 'Timestamp' ist (siehe
+    bes3-canfd-logger: `writer.writerow(["Timestamp", "ID", "DLC", "Data"])`).
+    Alles andere gilt als BLE-Hex-Log. Absichtlich NICHT einfach "enthaelt
+    die Zeile ein Komma" -- ein BLE-Log mit fuehrender, komma-getrennter
+    Timestamp-Spalte (manche nRF-Connect-Exporte) haette sonst faelschlich
+    als CAN-CSV gegolten, obwohl das erste Feld dort nie 'Timestamp' heisst.
+    Von bes3-log-plotter mitgenutzt, damit die Erkennung an nur einer Stelle
+    gepflegt wird."""
+    with open(path) as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            first_field = line.split(",", 1)[0].strip()
+            return first_field.lower() != "timestamp"
+    return False
+
+
+def _print_ble_summary(path):
+    res = decode_ble_file(path)
+    print(f"\n=== {path} (BLE) ===")
+    for name, series in res.items():
+        if not series:
+            print(f"  {name:22}: (keine Daten)")
+            continue
+        vals = [v for _, v in series]
+        if name == "fahrmodus":
+            # Kein Modus-Namen im BLE-Log (anders als bei CAN-CSVs ueber
+            # ID 401) -- daher ueber die Default-Namensliste aufloesen.
+            seq = []
+            for v in vals:
+                lbl = f"{v}({_MODI_DEFAULT.get(v, '?')})"
+                if not seq or seq[-1] != lbl:
+                    seq.append(lbl)
+            print(f"  {name:22}: n={len(series):6}  Verlauf: {' -> '.join(seq)}")
+        elif name == "reichweite_km_je_modus":
+            print(f"  {name:22}: n={len(series):6}  erst={vals[0]}  letzt={vals[-1]}")
+        else:
+            print(f"  {name:22}: n={len(series):6}  "
+                  f"min={min(vals):8.2f}  max={max(vals):8.2f}  "
+                  f"erst={vals[0]:8.2f}  letzt={vals[-1]:8.2f}")
+
+
 def main():
     if len(sys.argv) < 2:
         print(__doc__)
         sys.exit(1)
     for path in sys.argv[1:]:
-        res = decode_file(path)
-        modes = extract_mode_list(path)  # {index: name} aus dieser Aufnahme
-        print(f"\n=== {path} ===")
-        print(f"  Fahrmodus-Liste: {', '.join(f'{i}={n}' for i, n in modes.items())}")
-        for name, series in res.items():
-            if not series:
-                print(f"  {name:22}: (keine Daten)")
-                continue
-            vals = [v for _, v in series]
-            if name == "fahrmodus":
-                # Index ueber die Liste dieser Aufnahme in Namen aufloesen
-                seq = []
-                for v in vals:
-                    lbl = f"{v}({modes.get(v, '?')})"
-                    if not seq or seq[-1] != lbl:
-                        seq.append(lbl)
-                print(f"  {name:22}: n={len(series):6}  Verlauf: {' -> '.join(seq)}")
-            elif name == "reichweite_km_je_modus":
-                # vals sind 4er-Listen (ein Wert je Fahrmodus), kein einzelner Skalar
-                print(f"  {name:22}: n={len(series):6}  erst={vals[0]}  letzt={vals[-1]}")
-            else:
-                print(f"  {name:22}: n={len(series):6}  "
-                      f"min={min(vals):8.2f}  max={max(vals):8.2f}  "
-                      f"erst={vals[0]:8.2f}  letzt={vals[-1]:8.2f}")
-
-        strings = extract_ascii_strings(path)
-        print("  Bauteil-Typcodes:")
-        for code, label in KNOWN_COMPONENT_CODES.items():
-            if code in strings:
-                print(f"    {code}  {label}")
-        rest = {s: v for s, v in strings.items() if s not in KNOWN_COMPONENT_CODES}
-        if rest:
-            print("  Weitere wiederkehrende Text-Strings (>=3x, mit CAN-ID(s)):")
-            for s, v in sorted(rest.items(), key=lambda kv: -kv[1]["count"]):
-                print(f"    {v['count']:5}x  {s:30}  [{describe_can_ids(v['can_ids'])}]")
+        if is_ble_log(path):
+            _print_ble_summary(path)
+        else:
+            _print_can_summary(path)
 
 
 if __name__ == "__main__":
