@@ -1,4 +1,4 @@
-# bes3-logger
+# bes3-canfd-logger
 
 Kleines Skript, das den CAN-FD-Bus des Bosch-eBike-Smart-Systems mitschneidet
 und roh (Timestamp, CAN-ID, DLC, Daten als Hex) in eine CSV-Datei schreibt.
@@ -29,14 +29,14 @@ Zum Frame-Aufbau und zur Dekodierung der geloggten Daten siehe die
   ```bash
   python3 -m venv .venv
   .venv/bin/pip install python-can python-can-usbtingo
-  .venv/bin/python bes3-logger.py
+  .venv/bin/python bes3-canfd-logger.py
   ```
 
   **Windows (PowerShell):**
   ```powershell
   python -m venv .venv
   .venv\Scripts\pip install python-can python-can-usbtingo
-  .venv\Scripts\python bes3-logger.py
+  .venv\Scripts\python bes3-canfd-logger.py
   ```
 - Läuft auf jedem Rechner mit freiem USB-Port, typischerweise ein
   **Raspberry Pi** am Rad. Auf dem Pi wird zusätzlich die Onboard-LED (`led0`)
@@ -62,12 +62,12 @@ sudo udevadm trigger
 ```
 
 Danach das usbTingo einmal ab- und wieder anstecken (oder neu booten) —
-danach läuft `bes3-logger.py` ohne `sudo` und ohne Zugriffsfehler.
+danach läuft `bes3-canfd-logger.py` ohne `sudo` und ohne Zugriffsfehler.
 
 ## Nutzung
 
 ```bash
-python3 bes3-logger.py [--prefix canfd]
+python3 bes3-canfd-logger.py [--prefix canfd]
 ```
 
 - `--prefix` (optional, Standard `canfd`): Präfix für den Dateinamen, z. B. um

@@ -1,15 +1,21 @@
 # bes3-decoder
 
-Gemeinsame Dekodier-Logik für die verifizierten BES3-CAN-FD-Signale
-(Varint-/Protobuf-Wire-Format, siehe [Haupt-README](../README.md) für Details
-zum Frame-Aufbau und die Herleitung jeder Skala). Kein eigenständiges Tool,
-sondern eine Python-Bibliothek — nutzbar sowohl für **ganze aufgezeichnete
-Dateien** als auch für **einzelne Live-CAN-Nachrichten**. Wird u. a. von
+Gemeinsame Dekodier-Logik für die verifizierten BES3-Signale — sowohl über
+**CAN-FD** als auch über **BLE** (zwei Transportwege desselben Bosch-Systems,
+gleiches Varint-/Protobuf-Wire-Format, siehe [Haupt-README](../README.md) für
+Details zum Frame-Aufbau und die Herleitung jeder Skala). Kein eigenständiges
+Tool, sondern eine Python-Bibliothek (`decode_bes3.py`, ein einziges Modul für
+beide Transportwege) — nutzbar sowohl für **ganze aufgezeichnete Dateien** als
+auch für **einzelne Live-Nachrichten**. Wird u. a. von
 [`bes3-log-plotter`](../bes3-log-plotter/README.md) verwendet.
 
 Stand: 2026-07-21 — siehe „Aktualität" unten.
 
 ## Enthält (`decode_bes3.py`)
+
+Dieser Abschnitt beschreibt den CAN-FD-Teil; der BLE-Teil (`decode_ble_frame`,
+`decode_ble_file`, `LOW16`, `is_ble_log`) steht weiter unten unter
+„BLE-Unterstützung" — beides liegt im selben Modul.
 
 - `SIGNALS`: Dict `signalname -> (Entry-ID-Hex, Dekodierfunktion)` — die
   Registry aller bekannten Werte. Maßgebliche, laufend gepflegte Tabelle
@@ -21,7 +27,7 @@ Stand: 2026-07-21 — siehe „Aktualität" unten.
   Signale zurück (leeres Dict, wenn keins passt). **Zustandslos** — jeder
   Aufruf ist unabhängig von vorherigen Frames.
 - `decode_file(path) -> dict`: liest eine CSV (`Timestamp,ID,DLC,Data`, wie
-  sie [`bes3-logger`](../bes3-logger/README.md) schreibt), ruft intern
+  sie [`bes3-canfd-logger`](../bes3-canfd-logger/README.md) schreibt), ruft intern
   `decode_frame` je Zeile auf und sammelt die Treffer zu Zeitreihen
   `{signalname: [(timestamp, wert), ...]}`.
 - `extract_mode_list(path) -> dict`: liest die (bike-spezifische,
@@ -100,7 +106,7 @@ Text-Panel.
 `decode_frame()` braucht keine Datei — sie nimmt die rohen Bytes **einer**
 CAN-FD-Nachricht entgegen und dekodiert sofort, was darin steckt. Direkt
 kombinierbar mit `python-can` (dieselbe Bus-Anbindung wie in
-[`bes3-logger`](../bes3-logger/README.md)), z. B. für eine simple
+[`bes3-canfd-logger`](../bes3-canfd-logger/README.md)), z. B. für eine simple
 Live-Ausgabe auf der Konsole:
 
 ```python
@@ -123,7 +129,7 @@ Nachricht zurück.
 
 Voraussetzungen für dieses Beispiel wie beim Logger: `python-can` +
 `python-can-usbtingo`, siehe „Womit" in der
-[`bes3-logger`-README](../bes3-logger/README.md#womit-hardware--software)
+[`bes3-canfd-logger`-README](../bes3-canfd-logger/README.md#womit-hardware--software)
 (inkl. venv-Anleitung für Linux/Windows und dem Hinweis zur nötigen
 udev-Regel unter Linux).
 
@@ -140,6 +146,65 @@ Maßgeblich und laufend gepflegt ist die Tabelle in der
 [Haupt-README](../README.md); wird dort etwas Neues verifiziert, sollte
 `SIGNALS` hier bei Gelegenheit nachgezogen werden (das Mapping ist bewusst
 simpel gehalten: Entry-ID + kleine Dekodierfunktion pro Signal).
+
+## BLE-Unterstützung
+
+CAN-FD und BLE sind zwei Transportwege desselben Bosch-Smart-Systems mit
+demselben Protobuf-Varint-Wire-Format und denselben Signal-IDs. Verifiziert:
+die 2-Byte-ID im BLE-Frame ist identisch mit den unteren 16 Bit der 4-Byte-
+Entry-ID im CAN-Decoder (z. B. BLE-ID `98 2D` ⇔ CAN-Entry-ID `001C982D`,
+Geschwindigkeit). Der BLE-Teil steht direkt in `decode_bes3.py` (Abschnitt
+„BLE-Unterstützung" im Quellcode) und ist deshalb eine reine **Erweiterung**,
+keine eigene Signaltabelle — er nutzt `SIGNALS` samt Per-Signal-
+Dekodierfunktionen von oben unverändert weiter. Gleiche Skalierung, gleiche
+Werte, nur ein anderer Frame-Rahmen.
+
+Ein BLE-Frame trägt genau ein Signal:
+
+```
+30 <len> <id_hi> <id_lo> [ 08 <varint...> ]
+```
+
+`len` zählt die Bytes nach dem Längenbyte; ein Frame ohne Datenfeld (`len ==
+2`) bedeutet Wert 0. Eine einzelne Notification kann mehrere `30…`-Frames
+hintereinander enthalten — `decode_ble_frame` läuft über den ganzen Puffer.
+
+- `decode_ble_frame(data: bytes) -> dict`: dekodiert **einen** Notification-
+  Puffer (ein oder mehrere `30…`-Frames) und gibt `{signalname: wert}` zurück.
+  Zustandslos, genau wie `decode_frame`.
+- `decode_ble_file(path) -> dict`: liest ein Hex-Log (ein Frame-Puffer pro
+  Zeile, Trennzeichen `-` oder Leerzeichen, optionale führende Timestamp-
+  Spalte) und sammelt Zeitreihen — Rückgabestruktur identisch zu
+  `decode_file`. **Einschränkung:** der Timestamp muss durch `-`
+  oder Whitespace (auch Tab) vom Frame getrennt sein — ist die Spalte
+  stattdessen per **Komma** abgetrennt (CSV-Stil), wird die Zeile nicht
+  erkannt (kein Crash, aber auch kein Ergebnis für diese Zeile).
+- `LOW16`: Lookup „untere 16 Bit der Entry-ID (Hex) → (signalname, fn)",
+  gebaut aus `SIGNALS` beim Import, inkl. Kollisions-Guard.
+- `is_ble_log(path) -> bool`: Format-Erkennung anhand der ersten nicht-leeren
+  Zeile — CAN-CSVs von `bes3-canfd-logger` haben als erstes Kopfzeilen-Feld immer
+  wörtlich `Timestamp`, alles andere gilt als BLE-Hex-Log. Wird von der
+  gemeinsamen CLI (unten) und von [`bes3-log-plotter`](../bes3-log-plotter/)
+  genutzt, damit die Erkennung nur an einer Stelle gepflegt wird.
+
+Dieselbe CLI wie oben erkennt das Format automatisch:
+
+```bash
+python3 decode_bes3.py ble-log.txt
+```
+
+Live-Betrieb bedeutet hier ausschließlich: pro eintreffender Notification
+`decode_ble_frame(bytes)` aufrufen — kein BLE-Client, keine Verbindungslogik,
+keine UUID, kein `bleak` in diesem Modul. Woher die Bytes kommen (Sniffer,
+ein anderes Programm, eine Pipe), ist irrelevant:
+
+```python
+import decode_bes3 as b
+
+# 'data' sind die rohen Bytes einer eingetroffenen Notification (woher auch immer)
+for name, wert in b.decode_ble_frame(data).items():
+    print(f"{name}: {wert}")
+```
 
 ## Lizenz
 
