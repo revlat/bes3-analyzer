@@ -15,28 +15,14 @@ Neben CAN-FD kann [`bes3-decoder/`](bes3-decoder/README.md#ble-unterstützung)
 mittlerweile auch **BLE-Nachrichten** desselben Smart-Systems dekodieren: die
 BLE-2-Byte-ID entspricht den unteren 16 Bit der CAN-Entry-ID, beide nutzen
 dasselbe Varint-Wire-Format — dieselbe `SIGNALS`-Tabelle gilt für beide Wege.
-Zum Aufzeichnen eigener BLE-Mitschnitte (statt CAN-FD) siehe
-[`bes3-ble-logger/`](bes3-ble-logger/README.md) — läuft auf jedem Laptop mit
-Bluetooth LE, ganz ohne den CAN-FD-USB-Adapter. Für ein Live-Dashboard mit
-Gauges (Geschwindigkeit, Leistung, Akku, …), das sich sofort bei jeder
-eintreffenden BLE-Notification aktualisiert, siehe
-[`bes3-ble-cockpit/`](bes3-ble-cockpit/README.md).
-
-**⚠ Bekannte Einschränkung:** Eine eigene, unabhängige BLE-Live-Verbindung
-zum Bike (parallel zur Bosch-eBike-Flow-App) ließ sich beim ersten echten
-Test noch nicht zuverlässig herstellen — das Bike scheint nur eine aktive
-Verbindung gleichzeitig zuzulassen und setzt eine Kopplung (Pairing) voraus,
-die auch nach erfolgreicher Windows-Kopplung nicht zu einer funktionierenden
-`bleak`-Verbindung führte. Wird noch untersucht, Details in der
-[`bes3-ble-logger`-README](bes3-ble-logger/README.md#bekannte-einschränkung-live-verbindung-noch-nicht-zuverlässig).
 Das reine **Dekodieren** aufgezeichneter BLE-Logs (`bes3-decoder`,
-`bes3-log-plotter`) ist davon unabhängig und funktioniert bereits nachweislich
-(siehe Screenshots).
+`bes3-log-plotter`) funktioniert (siehe Screenshot unten). Zur BLE-Aufzeichnung
+selbst und einer Live-Verbindung per PC siehe die
+[Einschränkung weiter unten](#ble-aufzeichnunglive-verbindung-per-pc-nicht-möglich).
 
 <table>
 <tr>
 <td width="50%"><a href="bes3-log-plotter/example-plots/testfahrt_lang.png"><img src="bes3-log-plotter/example-plots/testfahrt_lang.png" width="260" alt="Beispiel-Plot des bes3-log-plotter"></a><br><sub>bes3-log-plotter — CAN-FD/BLE, nachträglich aus einer Aufnahme</sub></td>
-<td width="50%"><a href="bes3-ble-cockpit/example_cockpit.png"><img src="bes3-ble-cockpit/example_cockpit.png" width="260" alt="Beispiel-Screenshot des bes3-ble-cockpit"></a><br><sub>bes3-ble-cockpit — BLE, live im Browser</sub></td>
 </tr>
 </table>
 
@@ -276,6 +262,23 @@ Beobachteter Inhalt:
 
 **Teile-/Materialnummern** erscheinen als ASCII im Bosch-Format
 `DEB… * nnnnn-nnnn-nn-…`.
+
+## BLE-Aufzeichnung/Live-Verbindung per PC nicht möglich
+
+Es gab einen Versuch, BLE-Mitschnitte und eine Live-Verbindung auch direkt
+vom PC aus (per Bluetooth-LE-Adapter, ohne CAN-FD-USB-Adapter) umzusetzen.
+Das Bike lässt aber nur eine aktive BLE-Verbindung gleichzeitig zu, und
+diese ist an das gekoppelte Smartphone mit der Bosch-eBike-Flow-App
+gebunden — ein unabhängiger `bleak`-Client auf dem PC bekam auch nach
+erfolgreicher Windows-Kopplung keine funktionierende Verbindung zustande.
+Der Python-Ansatz für die BLE-Aufzeichnung/Live-Verbindung per PC ist damit
+leider nicht funktionsfähig; BLE-Signale lassen sich aktuell nur über das
+Android-Gerät sniffen, auf dem die Flow-App läuft. Als Beispiel (auch für
+ein Web-Cockpit) bleiben Logger und Cockpit im Branch
+[`feature/ble-decoder`](https://github.com/revlat/bes3-analyzer/tree/feature/ble-decoder)
+erhalten.
+
+<a href="example_cockpit.png"><img src="example_cockpit.png" width="260" alt="Beispiel-Screenshot des BLE-Cockpits"></a><br><sub>BLE-Cockpit (Beispiel, Branch <code>feature/ble-decoder</code>) — live im Browser</sub>
 
 ## Markenhinweis
 
